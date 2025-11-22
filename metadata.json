@@ -1,0 +1,7 @@
+{
+  "name": "Musical Mood Mixer",
+  "description": "An AI-powered musical experience where a band of mice generates songs based on your mood.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
