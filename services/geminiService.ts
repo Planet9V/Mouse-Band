@@ -1,5 +1,5 @@
 
-import { GoogleGenAI, Type, Schema, Modality } from "@google/genai";
+import { GoogleGenAI, Type, Schema, Modality, LiveServerMessage } from "@google/genai";
 import { SongData, SonicGoal } from "../types";
 
 // Ensure API key is available
@@ -169,37 +169,84 @@ export const generateSongFromSession = async (input: string, goal: SonicGoal): P
   }
 };
 
-export const generateSongAudio = async (songData: SongData): Promise<string | null> => {
+export const generateSongAudio = async (songData: SongData): Promise<Uint8Array | null> => {
     if (!apiKey) return null;
 
-    try {
-        // Use gemini-2.5-flash-preview-tts for Text-to-Speech generation
-        const response = await ai.models.generateContent({
-            model: "gemini-2.5-flash-preview-tts",
-            contents: {
-                parts: [{
-                    text: `
-                        Perform the following lyrics with a ${songData.description} style.
-                        
-                        ${songData.lyrics.join("\n")}
-                    `
-                }]
-            },
+    return new Promise((resolve) => {
+        const audioChunks: Uint8Array[] = [];
+        
+        // Using the Live API model for better expressiveness (singing/musicality) than TTS
+        const sessionPromise = ai.live.connect({
+            model: 'gemini-2.5-flash-native-audio-preview-09-2025',
             config: {
                 responseModalities: [Modality.AUDIO],
                 speechConfig: {
-                    voiceConfig: {
-                        prebuiltVoiceConfig: { voiceName: 'Puck' }
+                    voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } }
+                },
+                systemInstruction: `
+                    You are an advanced AI musical synthesizer and vocalist. 
+                    Your task is to PERFORM the provided lyrics as a high-fidelity song.
+                    
+                    IMPORTANT INSTRUCTIONS:
+                    - Do NOT just speak the lyrics.
+                    - SING the lyrics with melody, pitch, and rhythm.
+                    - Use your voice to simulate musical texture where possible (humming, beatboxing, rhythm).
+                    - Match the requested GENRE and BPM intimately.
+                    - Emphasize the emotional tone required for the therapeutic goal.
+                `
+            },
+            callbacks: {
+                onopen: async () => {
+                    sessionPromise.then((session) => {
+                        session.send([{
+                            text: `
+                                PERFORM THIS SONG:
+                                Genre/Style: ${songData.description}
+                                BPM: ${songData.bpm}
+                                Mood Target: ${songData.analysis.moodProfile}
+                                
+                                LYRICS:
+                                ${songData.lyrics.join("\n")}
+                            `
+                        }], true);
+                    });
+                },
+                onmessage: (msg: LiveServerMessage) => {
+                    const audioData = msg.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
+                    if (audioData) {
+                        // Decode base64 to Uint8Array immediately
+                        const binaryString = atob(audioData);
+                        const len = binaryString.length;
+                        const bytes = new Uint8Array(len);
+                        for (let i = 0; i < len; i++) {
+                            bytes[i] = binaryString.charCodeAt(i);
+                        }
+                        audioChunks.push(bytes);
                     }
+
+                    if (msg.serverContent?.turnComplete) {
+                        // Concatenate all chunks into one buffer
+                        const totalLength = audioChunks.reduce((acc, chunk) => acc + chunk.length, 0);
+                        const result = new Uint8Array(totalLength);
+                        let offset = 0;
+                        for (const chunk of audioChunks) {
+                            result.set(chunk, offset);
+                            offset += chunk.length;
+                        }
+                        resolve(result);
+                        
+                        // Close session
+                        sessionPromise.then(s => s.close());
+                    }
+                },
+                onerror: (err) => {
+                    console.error("Live API Error:", err);
+                    resolve(null);
+                },
+                onclose: () => {
+                    // Session closed
                 }
             }
         });
-
-        const audioData = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-        return audioData || null;
-
-    } catch (error) {
-        console.error("Error generating audio:", error);
-        return null;
-    }
+    });
 };

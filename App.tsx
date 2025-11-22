@@ -6,10 +6,16 @@ import MouseCard from './components/MouseCard';
 import Visualizer from './components/Visualizer';
 import PsychometricScroller from './components/PsychometricScroller';
 import { generateSongFromSession, generateSongAudio } from './services/geminiService';
-import { decodeBase64, pcmToAudioBuffer } from './utils/audioUtils';
+import { pcmToAudioBuffer } from './utils/audioUtils';
 import { SongData, SonicGoal } from './types';
 
 type ViewState = 'landing' | 'mixer';
+
+// Add type definition for window with SpeechRecognition
+interface IWindow extends Window {
+  webkitSpeechRecognition: any;
+  SpeechRecognition: any;
+}
 
 export default function App() {
   const [view, setView] = useState<ViewState>('landing');
@@ -27,6 +33,10 @@ export default function App() {
   const [audioBuffer, setAudioBuffer] = useState<AudioBuffer | null>(null);
   const [isPlayingAudio, setIsPlayingAudio] = useState(false);
   
+  // Speech Recognition State
+  const [isRecording, setIsRecording] = useState(false);
+  const recognitionRef = useRef<any>(null);
+  
   // Refs for Web Audio API
   const audioContextRef = useRef<AudioContext | null>(null);
   const sourceNodeRef = useRef<AudioBufferSourceNode | null>(null);
@@ -43,6 +53,63 @@ export default function App() {
         }
     };
   }, []);
+
+  // Initialize Speech Recognition
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+        const { webkitSpeechRecognition, SpeechRecognition } = window as unknown as IWindow;
+        const SpeechRecognitionClass = SpeechRecognition || webkitSpeechRecognition;
+
+        if (SpeechRecognitionClass) {
+            const recognition = new SpeechRecognitionClass();
+            recognition.continuous = true;
+            recognition.interimResults = false;
+            recognition.lang = 'en-US';
+
+            recognition.onresult = (event: any) => {
+                let newTranscript = '';
+                for (let i = event.resultIndex; i < event.results.length; ++i) {
+                    if (event.results[i].isFinal) {
+                        newTranscript += event.results[i][0].transcript;
+                    }
+                }
+                if (newTranscript) {
+                    setSessionInput(prev => prev + (prev.length > 0 ? ' ' : '') + newTranscript);
+                }
+            };
+
+            recognition.onerror = (event: any) => {
+                console.error('Speech recognition error', event.error);
+                setIsRecording(false);
+            };
+
+            recognition.onend = () => {
+                setIsRecording(false);
+            };
+
+            recognitionRef.current = recognition;
+        }
+    }
+  }, []);
+
+  const toggleRecording = () => {
+    if (!recognitionRef.current) {
+        alert("Speech recognition is not supported in this browser.");
+        return;
+    }
+
+    if (isRecording) {
+        recognitionRef.current.stop();
+    } else {
+        try {
+            recognitionRef.current.start();
+            setIsRecording(true);
+        } catch (error) {
+            console.error("Failed to start recording:", error);
+            setIsRecording(false);
+        }
+    }
+  };
 
   // Auto-rotate active musician on landing page
   useEffect(() => {
@@ -109,15 +176,15 @@ export default function App() {
     // 2. Generate Audio
     if (data && audioContextRef.current) {
         setIsGeneratingAudio(true);
-        const audioBase64 = await generateSongAudio(data);
+        // generateSongAudio now returns Uint8Array (raw audio bytes) directly
+        const rawAudio = await generateSongAudio(data);
         
-        if (audioBase64) {
-            const rawBytes = decodeBase64(audioBase64);
-            const buffer = await pcmToAudioBuffer(rawBytes, audioContextRef.current);
+        if (rawAudio) {
+            const buffer = await pcmToAudioBuffer(rawAudio, audioContextRef.current);
             setAudioBuffer(buffer);
             setIsGeneratingAudio(false);
             
-            // Auto play
+            // Auto play optional
             // setTimeout(() => {
             //     playAudio();
             // }, 100);
@@ -205,12 +272,30 @@ export default function App() {
                   </div>
                   
                   <div className="flex flex-col gap-6 bg-indigo/40 p-6 rounded-3xl border border-cream/10 backdrop-blur-sm">
-                    <textarea 
-                        value={sessionInput}
-                        onChange={(e) => setSessionInput(e.target.value)}
-                        placeholder="I'm feeling a bit overwhelmed with work today and just need to clear my head..."
-                        className="w-full h-40 p-4 rounded-xl bg-background-dark/50 border-2 border-cream/10 text-cream text-lg placeholder:text-cream/20 focus:outline-none focus:border-coral focus:ring-1 focus:ring-coral transition-all resize-none"
-                    />
+                    <div className="relative w-full">
+                        <textarea 
+                            value={sessionInput}
+                            onChange={(e) => setSessionInput(e.target.value)}
+                            placeholder="Type or record your thoughts... (e.g. I'm feeling a bit overwhelmed with work today and just need to clear my head...)"
+                            className="w-full h-40 p-4 pb-12 rounded-xl bg-background-dark/50 border-2 border-cream/10 text-cream text-lg placeholder:text-cream/20 focus:outline-none focus:border-coral focus:ring-1 focus:ring-coral transition-all resize-none"
+                        />
+                        {/* Mic Button */}
+                        {recognitionRef.current && (
+                            <button 
+                                onClick={toggleRecording}
+                                className={`absolute bottom-4 right-4 p-3 rounded-full transition-all flex items-center justify-center ${
+                                    isRecording 
+                                        ? 'bg-coral text-white animate-pulse shadow-[0_0_15px_rgba(255,107,107,0.6)]' 
+                                        : 'bg-indigo/80 text-cream/60 hover:bg-indigo hover:text-cream'
+                                }`}
+                                title={isRecording ? "Stop Recording" : "Start Recording"}
+                            >
+                                <span className="material-symbols-outlined text-2xl">
+                                    {isRecording ? 'mic_off' : 'mic'}
+                                </span>
+                            </button>
+                        )}
+                    </div>
                     
                     <div className="space-y-3">
                         <label className="text-sm font-bold uppercase tracking-widest text-cream/50">Sonic Goal</label>
